@@ -1,0 +1,12 @@
+[project]
+name = "mirae-api"
+version = "0.0.0"
+description = "Stub server exposing the assumed internal API contracts"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[tool.uv]
+package = false
