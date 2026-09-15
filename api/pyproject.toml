@@ -1,0 +1,8 @@
+[project]
+name = "mirae-api"
+version = "0.0.1"
+description = "Stub server exposing the assumed internal API contracts"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard-no-fastapi-cloud-cli]>=0.115.0",
+]

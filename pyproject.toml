@@ -1,0 +1,18 @@
+[project]
+name = "mirae"
+version = "0.0.1"
+description = "DesignHub contributor pipeline automation PoC"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.9.0",
+]
+
+[tool.uv.workspace]
+members = ["api"]
+
+[tool.pytest.ini_options]
+testpaths = ["api/tests", "n8n/tests"]
