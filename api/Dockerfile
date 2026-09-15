@@ -7,7 +7,8 @@ COPY --from=uv /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH="/app/api/src"
 
 WORKDIR /app
 
@@ -19,4 +20,4 @@ COPY api/src api/src
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--app-dir", "api/src", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["fastapi", "dev", "api/src/main.py", "--host", "0.0.0.0", "--port", "8000"]
