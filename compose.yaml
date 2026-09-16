@@ -16,6 +16,9 @@ services:
 
   n8n:
     image: docker.io/n8nio/n8n:2.38.7
+    environment:
+      - N8N_MCP_MANAGED_BY_ENV=true
+      - N8N_MCP_ACCESS_ENABLED=true
     ports:
       - "${N8N_PORT:-5678}:5678"
     volumes:
