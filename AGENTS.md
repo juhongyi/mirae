@@ -12,5 +12,3 @@ Before editing: `git fetch origin`; ask the user for a base branch; work only in
 
 PRs: English titles; clear, concise Korean bodies that respect reviewers' time by providing enough context.\
 Commit and PR titles must be natural English sentences, not prefixed with tags such as `feat:` or `docs:`.
-
-Follow DESIGN.md as the sole design reference for all UI work.
