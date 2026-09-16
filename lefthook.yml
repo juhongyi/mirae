@@ -1,0 +1,8 @@
+pre-commit:
+  commands:
+    check:
+      glob: "n8n/workflows/*.ts"
+      run: pnpm check {staged_files}
+    validate:
+      glob: "n8n/workflows/*.ts"
+      run: pnpm validate
