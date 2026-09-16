@@ -1,6 +1,6 @@
 allowBuilds:
   lefthook: true
-  esbuild: true
+  esbuild: false
   isolated-vm: false
   ssh2: false
   cpu-features: false

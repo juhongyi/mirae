@@ -3,9 +3,8 @@
   "private": true,
   "packageManager": "pnpm@11.23.0",
   "scripts": {
-    "validate": "for f in n8n/workflows/*.ts; do [ -f \"$f\" ] || continue; node --import tsx node_modules/@n8n/workflow-sdk/dist/cli/index.js validate \"$f\" || exit 1; done",
-    "lint": "pnpm exec biome lint n8n/workflows",
-    "check": "pnpm exec biome check n8n/workflows"
+    "check": "pnpm exec biome check --write",
+    "validate": "for f in n8n/workflows/*.ts; do [ -f \"$f\" ] || continue; node --import tsx node_modules/@n8n/workflow-sdk/dist/cli/index.js validate \"$f\" || exit 1; done"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",

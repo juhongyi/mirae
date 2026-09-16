@@ -220,4 +220,3 @@ __marimo__/
 # Node
 node_modules/
 .lefthook/
-lefthook-local.yml
