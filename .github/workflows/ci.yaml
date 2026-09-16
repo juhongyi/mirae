@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen --all-groups
+      - run: uv run ruff check .
+      # Temporary: remove this guard once test and workflow files are added.
+      - if: ${{ hashFiles('api/tests/**/*.py', 'n8n/tests/**/*.py') != '' }}
+        run: uv run pytest
+
+  n8n:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Temporary: remove this guard once test and workflow files are added.
+      - if: ${{ hashFiles('n8n/workflows/**/*.ts') != '' }}
+        run: pnpm exec biome check n8n/workflows
+      # Temporary: remove this guard once test and workflow files are added.
+      - if: ${{ hashFiles('n8n/workflows/**/*.ts') != '' }}
+        run: pnpm validate
