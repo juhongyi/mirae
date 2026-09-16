@@ -1,0 +1,8 @@
+pre-commit:
+  commands:
+    format:
+      glob: "n8n/workflows/*.ts"
+      run: pnpm exec biome check --write {staged_files}
+    validate:
+      glob: "n8n/workflows/*.ts"
+      run: pnpm validate

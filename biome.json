@@ -1,0 +1,5 @@
+{
+  "files": {
+    "includes": ["n8n/workflows/**/*.ts"]
+  }
+}

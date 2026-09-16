@@ -1,0 +1,9 @@
+allowBuilds:
+  lefthook: true
+  esbuild: true
+  isolated-vm: false
+  ssh2: false
+  cpu-features: false
+  protobufjs: false
+  oracledb: false
+  '@confluentinc/kafka-javascript': false
