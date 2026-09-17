@@ -125,7 +125,7 @@ class ReviewDecisionCreate(BaseModel):
 class NotificationCreate(BaseModel):
     event_id: str
     recipient_id: str
-    kind: Literal["rejection", "operator_alert", "anomaly_alert"]
+    kind: Literal["rejection", "operator_alert", "anomaly_alert", "conversion_failure"]
     reference_event_id: str
 
 
@@ -430,6 +430,25 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=409, detail="SLA check has no breaches")
             metrics = ", ".join(item["metric"] for item in reference["breaches"])
             message = f"심사 대기열 SLA 임계값을 초과했습니다: {metrics}"
+        elif request.kind == "conversion_failure":
+            reference = store.svg_conversions.get(request.reference_event_id)
+            if reference is None:
+                raise HTTPException(
+                    status_code=404, detail="SVG conversion result not found"
+                )
+            if reference["success"]:
+                raise HTTPException(
+                    status_code=409, detail="SVG conversion did not fail"
+                )
+            submission = store.submissions.get(reference["submission_id"])
+            if (
+                submission is not None
+                and request.recipient_id != submission["contributor_id"]
+            ):
+                raise HTTPException(
+                    status_code=409, detail="recipient does not own the submission"
+                )
+            message = f"SVG 변환에 실패했습니다: {reference['error']}"
         else:
             reference = store.anomaly_checks.get(request.reference_event_id)
             if reference is None:
