@@ -17,6 +17,11 @@ services:
   n8n:
     image: docker.io/n8nio/n8n:2.38.7
     environment:
+      - N8N_INSTANCE_OWNER_MANAGED_BY_ENV=true
+      - N8N_INSTANCE_OWNER_EMAIL=admin@admin.com
+      - N8N_INSTANCE_OWNER_FIRST_NAME=admin
+      - N8N_INSTANCE_OWNER_LAST_NAME=admin
+      - N8N_INSTANCE_OWNER_PASSWORD_HASH=$$2y$$10$$DB2udtFcyrZrJh8uaYzNYeh9ZWuM5La72qrlNbUEm.toXG4sMJi2a
       - N8N_MCP_MANAGED_BY_ENV=true
       - N8N_MCP_ACCESS_ENABLED=true
     ports:
