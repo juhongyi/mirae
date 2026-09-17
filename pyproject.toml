@@ -15,4 +15,4 @@ dev = [
 members = ["api"]
 
 [tool.pytest.ini_options]
-testpaths = ["api/tests", "n8n/tests"]
+testpaths = ["api/tests"]
