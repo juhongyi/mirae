@@ -123,8 +123,42 @@ class ReviewDecisionCreate(BaseModel):
 class NotificationCreate(BaseModel):
     event_id: str
     recipient_id: str
-    kind: Literal["rejection", "operator_alert"]
+    kind: Literal["rejection", "operator_alert", "anomaly_alert", "conversion_failure"]
     reference_event_id: str
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def require_conversion_failure_detail(self) -> "NotificationCreate":
+        if self.kind == "conversion_failure" and not self.detail:
+            raise ValueError("A conversion failure requires a detail")
+        return self
+
+
+class SettlementCreate(BaseModel):
+    event_id: str
+    contributor_id: str
+    period: str
+    revenue: int = Field(ge=0)
+    usage_count: int = Field(ge=0)
+    content_statuses: dict[str, Literal["published", "unpublished"]] = Field(
+        default_factory=dict
+    )
+    usage_items: list[dict[str, int | float | str]] = Field(default_factory=list)
+
+
+class AnomalyCheckCreate(BaseModel):
+    event_id: str
+    period: str
+    previous_period: str
+    revenue_ratio_threshold: float = Field(default=0.7, gt=0, le=1)
+    usage_ratio_threshold: float = Field(default=0.8, ge=0)
+
+
+class SettlementStatementCreate(BaseModel):
+    event_id: str
+    contributor_id: str
+    period: str
+    usage_items: list[dict[str, int | float | str]] = Field(min_length=1)
 
 
 @dataclass
@@ -135,6 +169,9 @@ class Store:
     sla_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
     decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
     notifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    settlements: dict[str, dict[str, Any]] = field(default_factory=dict)
+    anomaly_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    statements: dict[str, dict[str, Any]] = field(default_factory=dict)
     audit_events: list[dict[str, str]] = field(default_factory=list)
     idempotency: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = field(
         default_factory=dict
@@ -383,7 +420,7 @@ def create_app() -> FastAPI:
                 f"[{item['name']}] {item['guidance']}" for item in reasons
             )
             message = f"반려 사유: {details}"
-        else:
+        elif request.kind == "operator_alert":
             reference = store.sla_checks.get(request.reference_event_id)
             if reference is None:
                 raise HTTPException(status_code=404, detail="SLA check not found")
@@ -391,7 +428,21 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=409, detail="SLA check has no breaches")
             metrics = ", ".join(item["metric"] for item in reference["breaches"])
             message = f"심사 대기열 SLA 임계값을 초과했습니다: {metrics}"
-
+        elif request.kind == "conversion_failure":
+            message = f"SVG 변환에 실패했습니다: {request.detail}"
+        else:
+            reference = store.anomaly_checks.get(request.reference_event_id)
+            if reference is None:
+                raise HTTPException(status_code=404, detail="anomaly check not found")
+            anomalies = reference["anomalies"].get(request.recipient_id)
+            if not anomalies:
+                raise HTTPException(
+                    status_code=409, detail="recipient has no detected anomalies"
+                )
+            details = " ".join(
+                f"[{item['name']}] {item['guidance']}" for item in anomalies
+            )
+            message = f"정산 이상 징후가 감지되었습니다: {details}"
         notification = {
             "event_id": request.event_id,
             "recipient_id": request.recipient_id,
@@ -408,6 +459,153 @@ def create_app() -> FastAPI:
     @app.get("/notifications")
     def get_notifications() -> dict[str, list[dict[str, Any]]]:
         return {"items": list(store.notifications.values())}
+
+    def detect_settlement_anomalies(
+        current: dict[str, Any],
+        previous: dict[str, Any] | None,
+        revenue_ratio_threshold: float,
+        usage_ratio_threshold: float,
+    ) -> list[dict[str, str]]:
+        anomalies: list[dict[str, str]] = []
+
+        if previous is not None:
+            previous_revenue = previous["revenue"]
+            previous_usage = previous["usage_count"]
+
+            if previous_usage > 0 and previous_revenue > 0 and current["revenue"] > 0:
+                usage_ratio = current["usage_count"] / previous_usage
+                revenue_ratio = current["revenue"] / previous_revenue
+                if (
+                    usage_ratio >= usage_ratio_threshold
+                    and revenue_ratio <= revenue_ratio_threshold
+                ):
+                    anomalies.append(
+                        {
+                            "rule": "revenue_drop",
+                            "name": "수익 급감",
+                            "guidance": (
+                                "이전 주기 대비 사용량은 유지되는데 수익이 급감했습니다. "
+                                "정산 내역을 확인해 주세요."
+                            ),
+                        }
+                    )
+
+            if previous_revenue > 0 and current["revenue"] == 0:
+                anomalies.append(
+                    {
+                        "rule": "zero_revenue",
+                        "name": "0원 급변",
+                        "guidance": (
+                            "기존에 수익이 발생하던 콘텐츠가 이번 주기에 0원으로 "
+                            "집계되었습니다."
+                        ),
+                    }
+                )
+
+        previous_statuses = (
+            previous.get("content_statuses", {}) if previous is not None else {}
+        )
+        for content_id, status in current.get("content_statuses", {}).items():
+            if (
+                status == "unpublished"
+                and previous_statuses.get(content_id) == "published"
+            ):
+                anomalies.append(
+                    {
+                        "rule": "content_unpublished",
+                        "name": "비공개 처리",
+                        "guidance": f"콘텐츠 '{content_id}'가 비공개 처리되었습니다.",
+                    }
+                )
+
+        return anomalies
+
+    @app.post("/settlements")
+    @synchronized
+    def create_settlement(request: SettlementCreate) -> dict[str, Any]:
+        payload = request.model_dump(mode="json")
+        if replay := store.replay("settlement.recorded", request.event_id, payload):
+            return replay
+        key = (request.contributor_id, request.period)
+        existing = store.settlements.get(key)
+        settlement = request.model_dump(mode="python", exclude={"event_id"})
+        if existing is not None and existing != settlement:
+            raise HTTPException(status_code=409, detail="settlement already exists")
+        store.settlements[key] = settlement
+        response = {"event_id": request.event_id, "settlement": settlement}
+        store.audit("settlement.recorded", request.event_id, request.contributor_id)
+        return store.remember(
+            "settlement.recorded", request.event_id, payload, response
+        )
+
+    @app.get("/settlements")
+    def get_settlements(period: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        items = [
+            {**settlement, "contributor_id": contributor_id, "period": period_key}
+            for (contributor_id, period_key), settlement in store.settlements.items()
+            if period is None or period_key == period
+        ]
+        return {"items": items}
+
+    @app.post("/settlement-anomaly-checks")
+    @synchronized
+    def check_settlement_anomalies(request: AnomalyCheckCreate) -> dict[str, Any]:
+        payload = request.model_dump(mode="json")
+        if replay := store.replay(
+            "settlement.anomaly_checked", request.event_id, payload
+        ):
+            return replay
+        anomalies_by_contributor: dict[str, list[dict[str, str]]] = {}
+        for (contributor_id, period), current in store.settlements.items():
+            if period != request.period:
+                continue
+            previous = store.settlements.get((contributor_id, request.previous_period))
+            anomalies = detect_settlement_anomalies(
+                current,
+                previous,
+                request.revenue_ratio_threshold,
+                request.usage_ratio_threshold,
+            )
+            if anomalies:
+                anomalies_by_contributor[contributor_id] = anomalies
+        response = {
+            "event_id": request.event_id,
+            "period": request.period,
+            "anomalies": anomalies_by_contributor,
+        }
+        store.anomaly_checks[request.event_id] = response
+        store.audit("settlement.anomaly_checked", request.event_id, request.period)
+        return store.remember(
+            "settlement.anomaly_checked", request.event_id, payload, response
+        )
+
+    @app.post("/settlement-statements")
+    @synchronized
+    def create_settlement_statement(
+        request: SettlementStatementCreate,
+    ) -> dict[str, Any]:
+        payload = request.model_dump(mode="json")
+        if replay := store.replay("statement.generated", request.event_id, payload):
+            return replay
+        total = sum(int(item["amount"]) for item in request.usage_items)
+        statement = {
+            "statement_id": request.event_id,
+            "contributor_id": request.contributor_id,
+            "period": request.period,
+            "usage_items": request.usage_items,
+            "total": total,
+        }
+        store.statements[request.event_id] = statement
+        store.audit("statement.generated", request.event_id, request.contributor_id)
+        return store.remember(
+            "statement.generated", request.event_id, payload, statement
+        )
+
+    @app.get("/settlement-statements/{statement_id}")
+    def get_settlement_statement(statement_id: str) -> dict[str, Any]:
+        if statement_id not in store.statements:
+            raise HTTPException(status_code=404, detail="statement not found")
+        return store.statements[statement_id]
 
     @app.get("/audit-events")
     def get_audit_events() -> dict[str, list[dict[str, str]]]:

@@ -1,0 +1,291 @@
+from fastapi.testclient import TestClient
+
+
+def create_settlement(
+    client: TestClient,
+    contributor_id: str,
+    period: str,
+    revenue: int,
+    usage_count: int,
+    content_statuses: dict[str, str] | None = None,
+    usage_items: list[dict[str, int | float | str]] | None = None,
+    event_id: str | None = None,
+) -> None:
+    response = client.post(
+        "/settlements",
+        json={
+            "event_id": event_id or f"settle-{contributor_id}-{period}",
+            "contributor_id": contributor_id,
+            "period": period,
+            "revenue": revenue,
+            "usage_count": usage_count,
+            "content_statuses": content_statuses or {},
+            "usage_items": usage_items or [],
+        },
+    )
+    assert response.status_code == 200
+
+
+def test_settlements_list_by_period(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c2", "2026-08", 5000, 50)
+    create_settlement(client, "c1", "2026-09", 8000, 80)
+
+    august = client.get("/settlements", params={"period": "2026-08"})
+    assert august.status_code == 200
+    assert {item["contributor_id"] for item in august.json()["items"]} == {"c1", "c2"}
+
+    all_items = client.get("/settlements")
+    assert len(all_items.json()["items"]) == 3
+
+
+def test_settlement_statement_generation_from_usage_items(client: TestClient) -> None:
+    create_settlement(
+        client,
+        "c1",
+        "2026-09",
+        2000,
+        15,
+        usage_items=[
+            {
+                "content_id": "content-1",
+                "usage_count": 10,
+                "unit_price": 100,
+                "amount": 1000,
+            },
+            {
+                "content_id": "content-2",
+                "usage_count": 5,
+                "unit_price": 200,
+                "amount": 1000,
+            },
+        ],
+    )
+
+    settlement = client.get("/settlements", params={"period": "2026-09"}).json()[
+        "items"
+    ][0]
+    assert len(settlement["usage_items"]) == 2
+
+    response = client.post(
+        "/settlement-statements",
+        json={
+            "event_id": "statement-2",
+            "contributor_id": "c1",
+            "period": "2026-09",
+            "usage_items": settlement["usage_items"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 2000
+
+
+def test_revenue_drop_detected_when_usage_stable(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 5000, 100)
+
+    response = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-1",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    )
+
+    assert response.status_code == 200
+    anomalies = response.json()["anomalies"]
+    assert "c1" in anomalies
+    assert [a["rule"] for a in anomalies["c1"]] == ["revenue_drop"]
+
+
+def test_zero_revenue_detected(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 0, 100)
+
+    response = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-2",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    )
+
+    anomalies = response.json()["anomalies"]["c1"]
+    assert [a["rule"] for a in anomalies] == ["zero_revenue"]
+
+
+def test_unpublished_content_detected(client: TestClient) -> None:
+    create_settlement(
+        client,
+        "c1",
+        "2026-08",
+        10000,
+        100,
+        content_statuses={"content-1": "published"},
+    )
+    create_settlement(
+        client,
+        "c1",
+        "2026-09",
+        10000,
+        100,
+        content_statuses={"content-1": "unpublished"},
+    )
+
+    response = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-3",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    )
+
+    anomalies = response.json()["anomalies"]["c1"]
+    assert [a["rule"] for a in anomalies] == ["content_unpublished"]
+
+
+def test_no_anomaly_for_normal_data(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 12000, 120)
+
+    response = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-4",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    )
+
+    assert response.json()["anomalies"] == {}
+
+
+def test_revenue_drop_uses_threshold_parameters(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 8000, 80)
+
+    response = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-5",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+            "revenue_ratio_threshold": 0.9,
+            "usage_ratio_threshold": 0.7,
+        },
+    )
+
+    anomalies = response.json()["anomalies"]["c1"]
+    assert [a["rule"] for a in anomalies] == ["revenue_drop"]
+
+
+def test_anomaly_alert_notification(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 0, 100)
+
+    check = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-6",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    ).json()
+
+    response = client.post(
+        "/notifications",
+        json={
+            "event_id": "notify-anomaly",
+            "recipient_id": "c1",
+            "kind": "anomaly_alert",
+            "reference_event_id": check["event_id"],
+        },
+    )
+    assert response.status_code == 200
+    assert "정산 이상 징후" in response.json()["message"]
+    assert "0원 급변" in response.json()["message"]
+
+
+def test_anomaly_alert_rejects_unaffected_recipient(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c1", "2026-09", 0, 100)
+
+    check = client.post(
+        "/settlement-anomaly-checks",
+        json={
+            "event_id": "anomaly-7",
+            "period": "2026-09",
+            "previous_period": "2026-08",
+        },
+    ).json()
+
+    response = client.post(
+        "/notifications",
+        json={
+            "event_id": "notify-anomaly-2",
+            "recipient_id": "c2",
+            "kind": "anomaly_alert",
+            "reference_event_id": check["event_id"],
+        },
+    )
+    assert response.status_code == 409
+
+
+def test_statement_generation_and_retrieval(client: TestClient) -> None:
+    response = client.post(
+        "/settlement-statements",
+        json={
+            "event_id": "statement-1",
+            "contributor_id": "c1",
+            "period": "2026-09",
+            "usage_items": [
+                {
+                    "content_id": "content-1",
+                    "usage_count": 10,
+                    "unit_price": 100,
+                    "amount": 1000,
+                },
+                {
+                    "content_id": "content-2",
+                    "usage_count": 5,
+                    "unit_price": 200,
+                    "amount": 1000,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    statement = response.json()
+    assert statement["total"] == 2000
+    assert len(statement["usage_items"]) == 2
+
+    fetched = client.get("/settlement-statements/statement-1")
+    assert fetched.status_code == 200
+    assert fetched.json()["contributor_id"] == "c1"
+
+
+def test_statement_missing(client: TestClient) -> None:
+    assert client.get("/settlement-statements/nonexistent").status_code == 404
+
+
+def test_conversion_failure_notification_accepts_workflow_error(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/notifications",
+        json={
+            "event_id": "svg-1:conversion-failure",
+            "recipient_id": "contributor-1",
+            "kind": "conversion_failure",
+            "reference_event_id": "svg-1:conversion",
+            "detail": "SVG 경로를 파싱할 수 없습니다.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == (
+        "SVG 변환에 실패했습니다: SVG 경로를 파싱할 수 없습니다."
+    )
