@@ -7,8 +7,6 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
-from svg_conversion import convert_evenodd_to_nonzero, render_compare
-from svgpathtools import parse_path
 
 
 class ContentType(StrEnum):
@@ -127,6 +125,13 @@ class NotificationCreate(BaseModel):
     recipient_id: str
     kind: Literal["rejection", "operator_alert", "anomaly_alert", "conversion_failure"]
     reference_event_id: str
+    detail: str | None = None
+
+    @model_validator(mode="after")
+    def require_conversion_failure_detail(self) -> "NotificationCreate":
+        if self.kind == "conversion_failure" and not self.detail:
+            raise ValueError("A conversion failure requires a detail")
+        return self
 
 
 class SettlementCreate(BaseModel):
@@ -156,12 +161,6 @@ class SettlementStatementCreate(BaseModel):
     usage_items: list[dict[str, int | float | str]] = Field(min_length=1)
 
 
-class SvgConversionCreate(BaseModel):
-    event_id: str
-    submission_id: str
-    svg_content: str
-
-
 @dataclass
 class Store:
     submissions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -173,7 +172,6 @@ class Store:
     settlements: dict[str, dict[str, Any]] = field(default_factory=dict)
     anomaly_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
     statements: dict[str, dict[str, Any]] = field(default_factory=dict)
-    svg_conversions: dict[str, dict[str, Any]] = field(default_factory=dict)
     audit_events: list[dict[str, str]] = field(default_factory=list)
     idempotency: dict[str, tuple[str, dict[str, Any], dict[str, Any]]] = field(
         default_factory=dict
@@ -431,24 +429,7 @@ def create_app() -> FastAPI:
             metrics = ", ".join(item["metric"] for item in reference["breaches"])
             message = f"심사 대기열 SLA 임계값을 초과했습니다: {metrics}"
         elif request.kind == "conversion_failure":
-            reference = store.svg_conversions.get(request.reference_event_id)
-            if reference is None:
-                raise HTTPException(
-                    status_code=404, detail="SVG conversion result not found"
-                )
-            if reference["success"]:
-                raise HTTPException(
-                    status_code=409, detail="SVG conversion did not fail"
-                )
-            submission = store.submissions.get(reference["submission_id"])
-            if (
-                submission is not None
-                and request.recipient_id != submission["contributor_id"]
-            ):
-                raise HTTPException(
-                    status_code=409, detail="recipient does not own the submission"
-                )
-            message = f"SVG 변환에 실패했습니다: {reference['error']}"
+            message = f"SVG 변환에 실패했습니다: {request.detail}"
         else:
             reference = store.anomaly_checks.get(request.reference_event_id)
             if reference is None:
@@ -625,48 +606,6 @@ def create_app() -> FastAPI:
         if statement_id not in store.statements:
             raise HTTPException(status_code=404, detail="statement not found")
         return store.statements[statement_id]
-
-    @app.post("/svg-conversions")
-    @synchronized
-    def create_svg_conversion(request: SvgConversionCreate) -> dict[str, Any]:
-        payload = request.model_dump(mode="json")
-        if replay := store.replay("svg.converted", request.event_id, payload):
-            return replay
-        svg_content = request.svg_content
-        try:
-            parse_path(svg_content)
-        except ValueError as error:
-            response = {
-                "event_id": request.event_id,
-                "submission_id": request.submission_id,
-                "success": False,
-                "converted_content": None,
-                "error": f"SVG 경로를 파싱할 수 없습니다: {error}",
-            }
-            store.svg_conversions[request.event_id] = response
-            store.audit("svg.converted", request.event_id, request.submission_id)
-            return store.remember("svg.converted", request.event_id, payload, response)
-        converted = convert_evenodd_to_nonzero(svg_content)
-        mismatches = render_compare(svg_content, converted)
-        if mismatches > 0:
-            response = {
-                "event_id": request.event_id,
-                "submission_id": request.submission_id,
-                "success": False,
-                "converted_content": None,
-                "error": "변환 전후 렌더링이 일치하지 않아 사람 검토가 필요합니다.",
-            }
-        else:
-            response = {
-                "event_id": request.event_id,
-                "submission_id": request.submission_id,
-                "success": True,
-                "converted_content": converted,
-                "error": None,
-            }
-        store.svg_conversions[request.event_id] = response
-        store.audit("svg.converted", request.event_id, request.submission_id)
-        return store.remember("svg.converted", request.event_id, payload, response)
 
     @app.get("/audit-events")
     def get_audit_events() -> dict[str, list[dict[str, str]]]:

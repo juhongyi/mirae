@@ -271,48 +271,21 @@ def test_statement_missing(client: TestClient) -> None:
     assert client.get("/settlement-statements/nonexistent").status_code == 404
 
 
-def test_svg_conversion_success(client: TestClient) -> None:
-    donut = "M 0 0 L 100 0 L 100 100 L 0 100 Z M 10 10 L 90 10 L 90 90 L 10 90 Z"
+def test_conversion_failure_notification_accepts_workflow_error(
+    client: TestClient,
+) -> None:
     response = client.post(
-        "/svg-conversions",
+        "/notifications",
         json={
-            "event_id": "svg-1",
-            "submission_id": "submission-1",
-            "svg_content": donut,
+            "event_id": "svg-1:conversion-failure",
+            "recipient_id": "contributor-1",
+            "kind": "conversion_failure",
+            "reference_event_id": "svg-1:conversion",
+            "detail": "SVG 경로를 파싱할 수 없습니다.",
         },
     )
+
     assert response.status_code == 200
-    result = response.json()
-    assert result["success"] is True
-    assert result["converted_content"] is not None
-    assert result["error"] is None
-
-
-def test_svg_conversion_single_shape_success(client: TestClient) -> None:
-    response = client.post(
-        "/svg-conversions",
-        json={
-            "event_id": "svg-2",
-            "submission_id": "submission-1",
-            "svg_content": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
-        },
+    assert response.json()["message"] == (
+        "SVG 변환에 실패했습니다: SVG 경로를 파싱할 수 없습니다."
     )
-    assert response.status_code == 200
-    result = response.json()
-    assert result["success"] is True
-    assert result["converted_content"] is not None
-
-
-def test_svg_conversion_parse_failure(client: TestClient) -> None:
-    response = client.post(
-        "/svg-conversions",
-        json={
-            "event_id": "svg-3",
-            "submission_id": "submission-1",
-            "svg_content": "not a valid svg path with evenodd",
-        },
-    )
-    assert response.status_code == 200
-    result = response.json()
-    assert result["success"] is False
-    assert result["error"] is not None

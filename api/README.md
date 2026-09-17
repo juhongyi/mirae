@@ -1,6 +1,6 @@
 # DesignHub Phase 1-3 API
 
-기여자 콘텐츠의 기계적 사전 검증, 심사 대기열 관리, SLA 초과 감지, 심사 결정 및 알림(Phase 1), 정산 이상치 감지와 명세 생성·배포(Phase 2), SVG evenodd 자동 변환과 렌더 비교 검증(Phase 3)을 제공하는 스텁 API다. 창작성과 품질에 대한 판단은 자동화하지 않으며, 상태는 프로세스 메모리에 저장된다.
+기여자 콘텐츠의 기계적 사전 검증, 심사 대기열 관리, SLA 초과 감지, 심사 결정 및 알림(Phase 1), 정산 이상치 감지와 명세 생성·배포(Phase 2)를 제공하는 스텁 API다. Phase 3 SVG 변환은 n8n Code 노드가 직접 수행하며, API는 변환 실패 알림과 후속 제출 처리를 담당한다. 창작성과 품질에 대한 판단은 자동화하지 않으며, 상태는 프로세스 메모리에 저장된다.
 
 ## 처리 흐름
 
@@ -66,14 +66,6 @@
 ### 명세 필드
 
 `POST /settlement-statements`는 `usage_items`(건별 `content_id`, `usage_count`, `unit_price`, `amount`)를 받아 `total`을 계산해 저장한다.
-
-## Phase 3: SVG 자동 변환
-
-| Method | Path | 설명 |
-| --- | --- | --- |
-| `POST` | `/svg-conversions` | SVG 경로의 evenodd 채우기 규칙을 nonzero로 변환하고 렌더 비교로 검증한다. |
-
-`POST /svg-conversions`는 `submission_id`와 `svg_content`(경로 데이터)를 받아 변환한다. 홀수 깊이(내부 구멍) 서브패스를 반전해 nonzero 채우기 규칙으로 정규화하고, 변환 전후를 샘플링 렌더링 비교해 형태 무결성을 검증한다. 성공 시 `success: true`와 `converted_content`를, 실패 시(파싱 불가 또는 렌더 불일치) `success: false`와 `error`를 반환해 사람 처리로 이관할 수 있게 한다.
 
 FastAPI가 생성하는 전체 요청 및 응답 스키마는 `/docs` 또는 `/openapi.json`에서 확인할 수 있다.
 
