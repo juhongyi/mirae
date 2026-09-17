@@ -32,6 +32,7 @@
 | Method | Path | 설명 |
 | --- | --- | --- |
 | `POST` | `/settlements` | 기여자·주기별 정산 데이터를 등록한다. |
+| `GET` | `/settlements` | 등록된 정산 데이터를 조회한다. (`period` 쿼리로 필터 가능) |
 | `POST` | `/settlement-anomaly-checks` | 수익 급감·0원 급변·비공개 처리 이상 징후를 규칙으로 판정한다. |
 | `POST` | `/settlement-statements` | 건별 상세 명세를 생성·저장한다. |
 | `GET` | `/settlement-statements/{statement_id}` | 저장된 명세를 조회한다. |
@@ -48,6 +49,7 @@
 | `revenue` | 주기 수익 (원 단위 정수) |
 | `usage_count` | 주기 사용 횟수 |
 | `content_statuses` | 콘텐츠 ID → `published`/`unpublished` 상태 |
+| `usage_items` | 건별 사용 내역 (`content_id`, `usage_count`, `unit_price`, `amount`) |
 
 ### 이상치 감지 규칙
 

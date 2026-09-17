@@ -138,6 +138,7 @@ class SettlementCreate(BaseModel):
     content_statuses: dict[str, Literal["published", "unpublished"]] = Field(
         default_factory=dict
     )
+    usage_items: list[dict[str, int | float | str]] = Field(default_factory=list)
 
 
 class AnomalyCheckCreate(BaseModel):
@@ -536,6 +537,15 @@ def create_app() -> FastAPI:
         return store.remember(
             "settlement.recorded", request.event_id, payload, response
         )
+
+    @app.get("/settlements")
+    def get_settlements(period: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        items = [
+            {**settlement, "contributor_id": contributor_id, "period": period_key}
+            for (contributor_id, period_key), settlement in store.settlements.items()
+            if period is None or period_key == period
+        ]
+        return {"items": items}
 
     @app.post("/settlement-anomaly-checks")
     @synchronized

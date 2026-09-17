@@ -8,6 +8,7 @@ def create_settlement(
     revenue: int,
     usage_count: int,
     content_statuses: dict[str, str] | None = None,
+    usage_items: list[dict[str, int | float | str]] | None = None,
     event_id: str | None = None,
 ) -> None:
     response = client.post(
@@ -19,9 +20,64 @@ def create_settlement(
             "revenue": revenue,
             "usage_count": usage_count,
             "content_statuses": content_statuses or {},
+            "usage_items": usage_items or [],
         },
     )
     assert response.status_code == 200
+
+
+def test_settlements_list_by_period(client: TestClient) -> None:
+    create_settlement(client, "c1", "2026-08", 10000, 100)
+    create_settlement(client, "c2", "2026-08", 5000, 50)
+    create_settlement(client, "c1", "2026-09", 8000, 80)
+
+    august = client.get("/settlements", params={"period": "2026-08"})
+    assert august.status_code == 200
+    assert {item["contributor_id"] for item in august.json()["items"]} == {"c1", "c2"}
+
+    all_items = client.get("/settlements")
+    assert len(all_items.json()["items"]) == 3
+
+
+def test_settlement_statement_generation_from_usage_items(client: TestClient) -> None:
+    create_settlement(
+        client,
+        "c1",
+        "2026-09",
+        2000,
+        15,
+        usage_items=[
+            {
+                "content_id": "content-1",
+                "usage_count": 10,
+                "unit_price": 100,
+                "amount": 1000,
+            },
+            {
+                "content_id": "content-2",
+                "usage_count": 5,
+                "unit_price": 200,
+                "amount": 1000,
+            },
+        ],
+    )
+
+    settlement = client.get("/settlements", params={"period": "2026-09"}).json()[
+        "items"
+    ][0]
+    assert len(settlement["usage_items"]) == 2
+
+    response = client.post(
+        "/settlement-statements",
+        json={
+            "event_id": "statement-2",
+            "contributor_id": "c1",
+            "period": "2026-09",
+            "usage_items": settlement["usage_items"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 2000
 
 
 def test_revenue_drop_detected_when_usage_stable(client: TestClient) -> None:
