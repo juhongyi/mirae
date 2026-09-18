@@ -32,5 +32,6 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:workflows
       - run: pnpm check && git diff --exit-code
       - run: pnpm validate

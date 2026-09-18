@@ -23,21 +23,15 @@ const monitorSchedule = trigger({
 	},
 });
 
-const checkSla = node({
+const getReviewQueue = node({
 	type: "n8n-nodes-base.httpRequest",
 	version: 4.5,
 	config: {
-		name: "Check Review Queue SLA",
+		name: "Get Review Queue",
 		parameters: {
-			method: "POST",
-			url: "http://api:8000/review-queue/sla-checks",
+			method: "GET",
+			url: "http://api:8000/review-queue",
 			authentication: "none",
-			sendBody: true,
-			contentType: "json",
-			specifyBody: "json",
-			jsonBody: expr(
-				"{{ { event_id: 'review-sla:' + $today.toISODate(), checked_at: $today.set({ hour: 9 }).toISO(), max_wait_days: 10, max_queue_size: 20 } }}",
-			),
 			options: {
 				timeout: 10000,
 				response: {
@@ -50,17 +44,54 @@ const checkSla = node({
 	},
 	output: [
 		{
-			event_id: "review-sla:2026-09-17",
-			longest_wait_days: 11,
-			queue_size: 21,
-			breaches: [
+			items: [
 				{
-					metric: "longest_wait_days",
-					actual: 11,
-					threshold: 10,
+					event_id: "submission-event-1:enqueue",
+					submission_id: "submission-1",
+					contributor_id: "contributor-1",
+					submitted_at: "2026-09-01T09:00:00.000Z",
 				},
 			],
-			replayed: false,
+		},
+	],
+});
+
+const calculateSla = node({
+	type: "n8n-nodes-base.code",
+	version: 2,
+	config: {
+		name: "Calculate SLA Breaches",
+		parameters: {
+			mode: "runOnceForAllItems",
+			jsCode: `const input = $input.first().json;
+const date = new Date().toISOString().slice(0, 10);
+const checkedAt = date + "T09:00:00.000Z";
+const checkedAtMs = Date.parse(checkedAt);
+const waits = (input.items || []).map((item) => Math.max(0, (checkedAtMs - Date.parse(item.submitted_at)) / 86400000));
+const longestWaitDays = waits.length === 0 ? 0 : Math.max(...waits);
+const queueSize = (input.items || []).length;
+const breaches = [];
+if (longestWaitDays > 10) breaches.push({ metric: "longest_wait_days", actual: longestWaitDays, threshold: 10 });
+if (queueSize > 20) breaches.push({ metric: "queue_size", actual: queueSize, threshold: 20 });
+const metrics = breaches.map((breach) => breach.metric).join(", ");
+return [{ json: {
+  event_id: "review-sla:" + date,
+  checked_at: checkedAt,
+  longest_wait_days: longestWaitDays,
+  queue_size: queueSize,
+  breaches,
+  message: metrics ? "심사 대기열 SLA 임계값을 초과했습니다: " + metrics : "",
+} }];`,
+		},
+	},
+	output: [
+		{
+			event_id: "review-sla:2026-09-18",
+			checked_at: "2026-09-18T09:00:00.000Z",
+			longest_wait_days: 17,
+			queue_size: 1,
+			breaches: [{ metric: "longest_wait_days", actual: 17, threshold: 10 }],
+			message: "심사 대기열 SLA 임계값을 초과했습니다: longest_wait_days",
 		},
 	],
 });
@@ -108,7 +139,7 @@ const notifyOperator = node({
 			contentType: "json",
 			specifyBody: "json",
 			jsonBody: expr(
-				"{{ { event_id: $('Check Review Queue SLA').item.json.event_id + ':operator-notification', recipient_id: 'review-operations', kind: 'operator_alert', reference_event_id: $('Check Review Queue SLA').item.json.event_id } }}",
+				"{{ { event_id: $('Calculate SLA Breaches').item.json.event_id + ':operator-notification', recipient_id: 'review-operations', kind: 'operator_alert', reference_event_id: $('Calculate SLA Breaches').item.json.event_id, message: $('Calculate SLA Breaches').item.json.message } }}",
 			),
 			options: {
 				timeout: 10000,
@@ -122,7 +153,7 @@ const notifyOperator = node({
 	},
 	output: [
 		{
-			event_id: "review-sla:2026-09-17:operator-notification",
+			event_id: "review-sla:2026-09-18:operator-notification",
 			recipient_id: "review-operations",
 			kind: "operator_alert",
 			message: "심사 대기열 SLA 임계값을 초과했습니다: longest_wait_days",
@@ -136,5 +167,6 @@ export default workflow(
 	"Phase 1 - Monitor Review Queue SLA",
 )
 	.add(monitorSchedule)
-	.to(checkSla)
+	.to(getReviewQueue)
+	.to(calculateSla)
 	.to(hasSlaBreach.onTrue(notifyOperator));

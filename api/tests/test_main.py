@@ -32,313 +32,323 @@ def submission(
     return data
 
 
-def create_and_validate(
+def create_submission(
     client: TestClient,
     submission_id: str = "submission-1",
     **overrides: object,
 ) -> dict[str, object]:
-    assert (
-        client.post(
-            "/submissions", json=submission(submission_id, **overrides)
-        ).status_code
-        == 200
-    )
     response = client.post(
-        "/submission-validations",
-        json={"event_id": f"validate-{submission_id}", "submission_id": submission_id},
+        "/submissions", json=submission(submission_id, **overrides)
     )
     assert response.status_code == 200
     return response.json()
 
 
 def enqueue(
-    client: TestClient, submission_id: str = "submission-1"
+    client: TestClient,
+    submission_id: str = "submission-1",
+    event_id: str | None = None,
 ) -> dict[str, object]:
     response = client.post(
         "/review-queue",
         json={
-            "event_id": f"enqueue-{submission_id}",
+            "event_id": event_id or f"enqueue-{submission_id}",
             "submission_id": submission_id,
-            "validation_event_id": f"validate-{submission_id}",
         },
     )
     assert response.status_code == 200
     return response.json()
 
 
-def create_settlement(
-    client: TestClient,
-    contributor_id: str,
-    period: str,
-    revenue: int,
-    usage_count: int,
-    content_statuses: dict[str, str] | None = None,
-    usage_items: list[dict[str, int | float | str]] | None = None,
-    event_id: str | None = None,
-) -> None:
-    response = client.post(
-        "/settlements",
-        json={
-            "event_id": event_id or f"settle-{contributor_id}-{period}",
-            "contributor_id": contributor_id,
-            "period": period,
-            "revenue": revenue,
-            "usage_count": usage_count,
-            "content_statuses": content_statuses or {},
-            "usage_items": usage_items or [],
-        },
-    )
-    assert response.status_code == 200
+def notification_payload(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "event_id": "notify-1",
+        "recipient_id": "recipient-1",
+        "kind": "rejection",
+        "reference_event_id": "external-result-1",
+        "message": "Workflow supplied this exact message.",
+    }
+    data.update(overrides)
+    return data
+
+
+def statement_payload(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "event_id": "statement-1",
+        "contributor_id": "contributor-1",
+        "period": "2026-09",
+        "usage_items": [
+            {
+                "content_id": "content-1",
+                "usage_count": 10,
+                "unit_price": 100,
+                "amount": 1000,
+            }
+        ],
+        "total": 777,
+    }
+    data.update(overrides)
+    return data
 
 
 def test_health(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
 
 
-def test_validation_returns_every_violation_in_rule_order(client: TestClient) -> None:
-    result = create_and_validate(
+def test_automation_endpoints_are_removed(client: TestClient) -> None:
+    assert client.post("/submission-validations", json={}).status_code == 404
+    assert client.post("/review-queue/sla-checks", json={}).status_code == 404
+    assert client.post("/settlement-anomaly-checks", json={}).status_code == 404
+
+
+def test_removed_models_are_absent_from_openapi(client: TestClient) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert "ValidationCreate" not in schemas
+    assert "SlaCheckCreate" not in schemas
+    assert "AnomalyCheckCreate" not in schemas
+    assert set(schemas["QueueCreate"]["properties"]) == {"event_id", "submission_id"}
+
+
+def test_submission_stores_and_returns_raw_state(client: TestClient) -> None:
+    created = create_submission(
         client,
-        format="png",
-        file_size_bytes=153_601,
-        svg_attributes={"fill-rule": "evenodd", "stroke": "#000"},
+        format="unexpected-but-stored",
+        file_size_bytes=10_000_001,
+        svg_attributes={"stroke": "#000"},
         element_count=1001,
         whitespace_ratio=0.51,
     )
 
-    assert result["valid"] is False
-    assert [violation["rule"] for violation in result["violations"]] == [
-        "file_specification",
-        "forbidden_attribute",
-        "element_count",
-        "whitespace_ratio",
-    ]
-    assert all(
-        violation["name"] and violation["guidance"]
-        for violation in result["violations"]
-    )
+    stored = client.get("/submissions/submission-1")
+    assert stored.status_code == 200
+    assert stored.json() == created["submission"]
+    assert stored.json()["format"] == "unexpected-but-stored"
+    assert stored.json()["element_count"] == 1001
 
 
-def test_validation_accepts_policy_boundaries(client: TestClient) -> None:
-    result = create_and_validate(
-        client,
-        file_size_bytes=153_600,
-        element_count=1000,
-        whitespace_ratio=0.5,
-    )
-
-    assert result["valid"] is True
-    assert result["violations"] == []
-
-
-def test_image_ignores_svg_only_rules(client: TestClient) -> None:
-    result = create_and_validate(
-        client,
-        content_type="image",
-        format="png",
-        svg_attributes={"fill-rule": "evenodd", "stroke": "#000"},
-        element_count=1001,
-    )
-
-    assert result["valid"] is True
-
-
-def test_timestamps_require_timezone(client: TestClient) -> None:
+def test_submission_requires_timezone(client: TestClient) -> None:
     response = client.post(
         "/submissions",
         json=submission(submitted_at="2026-09-01T00:00:00"),
     )
-    assert response.status_code == 422
 
-    create_and_validate(client, "aware")
-    enqueue(client, "aware")
-    response = client.post(
-        "/review-queue/sla-checks",
-        json={"event_id": "sla-naive", "checked_at": "2026-09-12T00:00:00"},
-    )
     assert response.status_code == 422
 
 
-def test_only_validated_submissions_enter_review_queue(client: TestClient) -> None:
-    valid_result = create_and_validate(client, "valid")
-    invalid_result = create_and_validate(client, "invalid", element_count=1001)
-
-    assert valid_result["valid"] is True
-    assert enqueue(client, "valid")["submission_id"] == "valid"
-
-    response = client.post(
-        "/review-queue",
-        json={
-            "event_id": "enqueue-invalid",
-            "submission_id": "invalid",
-            "validation_event_id": invalid_result["event_id"],
-        },
-    )
-    assert response.status_code == 409
-    assert [
-        item["submission_id"] for item in client.get("/review-queue").json()["items"]
-    ] == ["valid"]
+def test_submission_missing(client: TestClient) -> None:
+    assert client.get("/submissions/missing").status_code == 404
 
 
-def test_sla_check_alerts_only_above_thresholds(client: TestClient) -> None:
-    create_and_validate(client)
-    enqueue(client)
-
-    boundary = client.post(
-        "/review-queue/sla-checks",
-        json={
-            "event_id": "sla-boundary",
-            "checked_at": "2026-09-11T00:00:00Z",
-            "max_wait_days": 10,
-            "max_queue_size": 1,
-        },
-    ).json()
-    breached = client.post(
-        "/review-queue/sla-checks",
-        json={
-            "event_id": "sla-breached",
-            "checked_at": "2026-09-12T00:00:00Z",
-            "max_wait_days": 10,
-            "max_queue_size": 0,
-        },
-    ).json()
-
-    assert boundary["breaches"] == []
-    assert [breach["metric"] for breach in breached["breaches"]] == [
-        "longest_wait_days",
-        "queue_size",
-    ]
-
-    fractional_breach = client.post(
-        "/review-queue/sla-checks",
-        json={
-            "event_id": "sla-fractional-breach",
-            "checked_at": "2026-09-11T00:00:01Z",
-            "max_wait_days": 10,
-            "max_queue_size": 1,
-        },
-    ).json()
-    assert [breach["metric"] for breach in fractional_breach["breaches"]] == [
-        "longest_wait_days"
-    ]
-
-    no_alert = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-normal-sla",
-            "recipient_id": "operator",
-            "kind": "operator_alert",
-            "reference_event_id": "sla-boundary",
-        },
-    )
-    alert = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-breached-sla",
-            "recipient_id": "operator",
-            "kind": "operator_alert",
-            "reference_event_id": "sla-breached",
-        },
-    )
-    assert no_alert.status_code == 409
-    assert alert.status_code == 200
-
-
-def test_automatic_and_human_rejections_use_notification_templates(
+def test_submission_is_idempotent_and_rejects_conflicting_event_reuse(
     client: TestClient,
 ) -> None:
-    automatic = create_and_validate(client, "automatic", element_count=1001)
-    wrong_recipient = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-wrong-recipient",
-            "recipient_id": "contributor-2",
-            "kind": "rejection",
-            "reference_event_id": automatic["event_id"],
-        },
-    )
-    assert wrong_recipient.status_code == 409
+    payload = submission()
 
-    automatic_notification = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-automatic",
-            "recipient_id": "contributor-1",
-            "kind": "rejection",
-            "reference_event_id": automatic["event_id"],
-        },
-    )
-    assert automatic_notification.status_code == 200
-    assert "요소 개수" in automatic_notification.json()["message"]
-
-    same_reason = create_and_validate(client, "same-reason", element_count=1001)
-    same_notification = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-same-reason",
-            "recipient_id": "contributor-1",
-            "kind": "rejection",
-            "reference_event_id": same_reason["event_id"],
-        },
-    )
-    assert (
-        same_notification.json()["message"] == automatic_notification.json()["message"]
+    first = client.post("/submissions", json=payload)
+    replay = client.post("/submissions", json=payload)
+    conflict = client.post(
+        "/submissions", json={**payload, "submission_id": "submission-2"}
     )
 
-    create_and_validate(client, "human")
-    enqueue(client, "human")
-    decision = client.post(
-        "/review-decisions",
-        json={
-            "event_id": "decision-human",
-            "submission_id": "human",
-            "decision": "rejected",
-            "reasons": ["copyright_risk"],
-        },
-    )
-    assert decision.status_code == 200
-    human_notification = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-human",
-            "recipient_id": "contributor-1",
-            "kind": "rejection",
-            "reference_event_id": "decision-human",
-        },
-    )
-    assert human_notification.status_code == 200
-    assert "저작권 위험" in human_notification.json()["message"]
+    assert first.json()["replayed"] is False
+    assert replay.json()["replayed"] is True
+    assert conflict.status_code == 409
 
 
-def test_approved_decision_rejects_rejection_reasons(client: TestClient) -> None:
-    create_and_validate(client)
+def test_review_queue_accepts_existing_submission_without_validation(
+    client: TestClient,
+) -> None:
+    create_submission(client, format="not-api-policy", element_count=50_000)
+
+    item = enqueue(client)
+
+    assert item == {
+        "event_id": "enqueue-submission-1",
+        "submission_id": "submission-1",
+        "contributor_id": "contributor-1",
+        "submitted_at": "2026-09-01T00:00:00Z",
+        "replayed": False,
+    }
+    assert client.get("/review-queue").json()["items"] == [
+        {key: value for key, value in item.items() if key != "replayed"}
+    ]
+
+
+def test_review_queue_rejects_missing_submission(client: TestClient) -> None:
+    response = client.post(
+        "/review-queue",
+        json={"event_id": "enqueue-missing", "submission_id": "missing"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "submission not found"
+    assert client.get("/review-queue").json() == {"items": []}
+
+
+def test_review_queue_is_idempotent_and_rejects_conflicting_event_reuse(
+    client: TestClient,
+) -> None:
+    create_submission(client, "submission-1")
+    create_submission(client, "submission-2")
+    payload = {"event_id": "enqueue-1", "submission_id": "submission-1"}
+
+    first = client.post("/review-queue", json=payload)
+    replay = client.post("/review-queue", json=payload)
+    conflict = client.post(
+        "/review-queue", json={**payload, "submission_id": "submission-2"}
+    )
+
+    assert first.json()["replayed"] is False
+    assert replay.json()["replayed"] is True
+    assert conflict.status_code == 409
+    assert len(client.get("/review-queue").json()["items"]) == 1
+
+
+def test_concurrent_review_queue_retries_have_one_side_effect(
+    client: TestClient,
+) -> None:
+    create_submission(client)
+    payload = {"event_id": "enqueue-concurrent", "submission_id": "submission-1"}
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        responses = list(
+            executor.map(lambda _: client.post("/review-queue", json=payload), range(8))
+        )
+
+    assert sum(not response.json()["replayed"] for response in responses) == 1
+    assert len(client.get("/review-queue").json()["items"]) == 1
+    audits = client.get("/audit-events").json()["items"]
+    assert sum(event["action"] == "review.enqueued" for event in audits) == 1
+
+
+@pytest.mark.parametrize(
+    ("decision", "reasons"),
+    [("rejected", []), ("approved", ["visual_quality"])],
+)
+def test_review_decision_enforces_reason_invariants(
+    client: TestClient,
+    decision: str,
+    reasons: list[str],
+) -> None:
+    create_submission(client)
     enqueue(client)
 
     response = client.post(
         "/review-decisions",
         json={
-            "event_id": "decision-approved",
+            "event_id": "decision-1",
             "submission_id": "submission-1",
-            "decision": "approved",
-            "reasons": ["visual_quality"],
+            "decision": decision,
+            "reasons": reasons,
         },
     )
 
     assert response.status_code == 422
+
+
+def test_review_decision_returns_reason_codes_only(client: TestClient) -> None:
+    create_submission(client)
+    enqueue(client)
+
+    response = client.post(
+        "/review-decisions",
+        json={
+            "event_id": "decision-1",
+            "submission_id": "submission-1",
+            "decision": "rejected",
+            "reasons": ["copyright_risk", "visual_quality"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reasons"] == ["copyright_risk", "visual_quality"]
+    assert client.get("/review-queue").json() == {"items": []}
+
+
+def test_review_decision_rejects_unknown_reason(client: TestClient) -> None:
+    create_submission(client)
+    enqueue(client)
+
+    response = client.post(
+        "/review-decisions",
+        json={
+            "event_id": "decision-1",
+            "submission_id": "submission-1",
+            "decision": "rejected",
+            "reasons": ["workflow_defined_reason"],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_review_decision_requires_queued_submission(client: TestClient) -> None:
+    create_submission(client)
+
+    response = client.post(
+        "/review-decisions",
+        json={
+            "event_id": "decision-1",
+            "submission_id": "submission-1",
+            "decision": "approved",
+            "reasons": [],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "rejection",
+        "operator_alert",
+        "anomaly_alert",
+        "conversion_failure",
+        "settlement_statement",
+    ],
+)
+def test_notification_stores_exact_workflow_supplied_values(
+    client: TestClient,
+    kind: str,
+) -> None:
+    payload = notification_payload(
+        event_id=f"notify-{kind}",
+        kind=kind,
+        recipient_id="unresolved-recipient",
+        reference_event_id="unknown-external-reference",
+        message=f"Exact {kind} message: do not rewrite.",
+    )
+
+    response = client.post("/notifications", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {**payload, "replayed": False}
+    assert client.get("/notifications").json()["items"] == [payload]
+
+
+@pytest.mark.parametrize("message", [None, ""])
+def test_notification_requires_non_empty_message(
+    client: TestClient,
+    message: str | None,
+) -> None:
+    payload = notification_payload()
+    if message is None:
+        del payload["message"]
+    else:
+        payload["message"] = message
+
+    assert client.post("/notifications", json=payload).status_code == 422
 
 
 def test_notification_is_idempotent_and_rejects_event_reuse(client: TestClient) -> None:
-    validation = create_and_validate(client, element_count=1001)
-    payload = {
-        "event_id": "notify-1",
-        "recipient_id": "contributor-1",
-        "kind": "rejection",
-        "reference_event_id": validation["event_id"],
-    }
+    payload = notification_payload()
 
     first = client.post("/notifications", json=payload)
     replay = client.post("/notifications", json=payload)
     conflict = client.post(
-        "/notifications", json={**payload, "recipient_id": "contributor-2"}
+        "/notifications", json={**payload, "message": "Different message"}
     )
 
     assert first.json()["replayed"] is False
@@ -350,13 +360,7 @@ def test_notification_is_idempotent_and_rejects_event_reuse(client: TestClient) 
 def test_concurrent_notification_retries_have_one_side_effect(
     client: TestClient,
 ) -> None:
-    validation = create_and_validate(client, element_count=1001)
-    payload = {
-        "event_id": "notify-concurrent",
-        "recipient_id": "contributor-1",
-        "kind": "rejection",
-        "reference_event_id": validation["event_id"],
-    }
+    payload = notification_payload(event_id="notify-concurrent")
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         responses = list(
@@ -367,286 +371,170 @@ def test_concurrent_notification_retries_have_one_side_effect(
 
     assert sum(not response.json()["replayed"] for response in responses) == 1
     assert len(client.get("/notifications").json()["items"]) == 1
-    notification_audits = [
-        event
-        for event in client.get("/audit-events").json()["items"]
-        if event["action"] == "notification.sent"
-    ]
-    assert len(notification_audits) == 1
+    audits = client.get("/audit-events").json()["items"]
+    assert sum(event["action"] == "notification.sent" for event in audits) == 1
 
 
-def test_actions_are_auditable(client: TestClient) -> None:
-    create_and_validate(client)
-    enqueue(client)
+def test_settlement_stores_raw_data_and_lists_by_period(client: TestClient) -> None:
+    august = {
+        "event_id": "settlement-august",
+        "contributor_id": "contributor-1",
+        "period": "2026-08",
+        "revenue": 1000,
+        "usage_count": 10,
+        "content_statuses": {"content-1": "published"},
+        "usage_items": [{"content_id": "content-1", "amount": 1000}],
+    }
+    september = {
+        **august,
+        "event_id": "settlement-september",
+        "period": "2026-09",
+        "revenue": 0,
+        "usage_count": 20,
+        "content_statuses": {"content-1": "unpublished"},
+    }
 
-    events = client.get("/audit-events").json()["items"]
-    assert [event["action"] for event in events] == [
-        "submission.created",
-        "submission.validated",
-        "review.enqueued",
-    ]
+    assert client.post("/settlements", json=august).status_code == 200
+    assert client.post("/settlements", json=september).status_code == 200
+
+    assert client.get("/settlements", params={"period": "2026-09"}).json() == {
+        "items": [{key: value for key, value in september.items() if key != "event_id"}]
+    }
+    assert len(client.get("/settlements").json()["items"]) == 2
 
 
-def test_settlements_list_by_period(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c2", "2026-08", 5000, 50)
-    create_settlement(client, "c1", "2026-09", 8000, 80)
+def test_settlement_is_idempotent_and_rejects_conflicting_record(
+    client: TestClient,
+) -> None:
+    payload = {
+        "event_id": "settlement-1",
+        "contributor_id": "contributor-1",
+        "period": "2026-09",
+        "revenue": 1000,
+        "usage_count": 10,
+    }
 
-    august = client.get("/settlements", params={"period": "2026-08"})
-    assert august.status_code == 200
-    assert {item["contributor_id"] for item in august.json()["items"]} == {"c1", "c2"}
-
-    all_items = client.get("/settlements")
-    assert len(all_items.json()["items"]) == 3
-
-
-def test_settlement_statement_generation_from_usage_items(client: TestClient) -> None:
-    create_settlement(
-        client,
-        "c1",
-        "2026-09",
-        2000,
-        15,
-        usage_items=[
-            {
-                "content_id": "content-1",
-                "usage_count": 10,
-                "unit_price": 100,
-                "amount": 1000,
-            },
-            {
-                "content_id": "content-2",
-                "usage_count": 5,
-                "unit_price": 200,
-                "amount": 1000,
-            },
-        ],
+    first = client.post("/settlements", json=payload)
+    replay = client.post("/settlements", json=payload)
+    conflicting_record = client.post(
+        "/settlements",
+        json={**payload, "event_id": "settlement-2", "revenue": 2000},
     )
 
-    settlement = client.get("/settlements", params={"period": "2026-09"}).json()[
-        "items"
-    ][0]
-    assert len(settlement["usage_items"]) == 2
-
-    response = client.post(
-        "/settlement-statements",
-        json={
-            "event_id": "statement-2",
-            "contributor_id": "c1",
-            "period": "2026-09",
-            "usage_items": settlement["usage_items"],
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["total"] == 2000
+    assert first.json()["replayed"] is False
+    assert replay.json()["replayed"] is True
+    assert conflicting_record.status_code == 409
 
 
-def test_revenue_drop_detected_when_usage_stable(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 5000, 100)
+def test_statement_stores_exact_completed_statement(client: TestClient) -> None:
+    payload = statement_payload(total=777)
 
-    response = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-1",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    )
+    response = client.post("/settlement-statements", json=payload)
 
     assert response.status_code == 200
-    anomalies = response.json()["anomalies"]
-    assert "c1" in anomalies
-    assert [a["rule"] for a in anomalies["c1"]] == ["revenue_drop"]
-
-
-def test_zero_revenue_detected(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 0, 100)
-
-    response = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-2",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    )
-
-    anomalies = response.json()["anomalies"]["c1"]
-    assert [a["rule"] for a in anomalies] == ["zero_revenue"]
-
-
-def test_unpublished_content_detected(client: TestClient) -> None:
-    create_settlement(
-        client,
-        "c1",
-        "2026-08",
-        10000,
-        100,
-        content_statuses={"content-1": "published"},
-    )
-    create_settlement(
-        client,
-        "c1",
-        "2026-09",
-        10000,
-        100,
-        content_statuses={"content-1": "unpublished"},
-    )
-
-    response = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-3",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    )
-
-    anomalies = response.json()["anomalies"]["c1"]
-    assert [a["rule"] for a in anomalies] == ["content_unpublished"]
-
-
-def test_no_anomaly_for_normal_data(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 12000, 120)
-
-    response = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-4",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    )
-
-    assert response.json()["anomalies"] == {}
-
-
-def test_revenue_drop_uses_threshold_parameters(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 8000, 80)
-
-    response = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-5",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-            "revenue_ratio_threshold": 0.9,
-            "usage_ratio_threshold": 0.7,
-        },
-    )
-
-    anomalies = response.json()["anomalies"]["c1"]
-    assert [a["rule"] for a in anomalies] == ["revenue_drop"]
-
-
-def test_anomaly_alert_notification(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 0, 100)
-
-    check = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-6",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    ).json()
-
-    response = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-anomaly",
-            "recipient_id": "c1",
-            "kind": "anomaly_alert",
-            "reference_event_id": check["event_id"],
-        },
-    )
-    assert response.status_code == 200
-    assert "정산 이상 징후" in response.json()["message"]
-    assert "0원 급변" in response.json()["message"]
-
-
-def test_anomaly_alert_rejects_unaffected_recipient(client: TestClient) -> None:
-    create_settlement(client, "c1", "2026-08", 10000, 100)
-    create_settlement(client, "c1", "2026-09", 0, 100)
-
-    check = client.post(
-        "/settlement-anomaly-checks",
-        json={
-            "event_id": "anomaly-7",
-            "period": "2026-09",
-            "previous_period": "2026-08",
-        },
-    ).json()
-
-    response = client.post(
-        "/notifications",
-        json={
-            "event_id": "notify-anomaly-2",
-            "recipient_id": "c2",
-            "kind": "anomaly_alert",
-            "reference_event_id": check["event_id"],
-        },
-    )
-    assert response.status_code == 409
-
-
-def test_statement_generation_and_retrieval(client: TestClient) -> None:
-    response = client.post(
-        "/settlement-statements",
-        json={
-            "event_id": "statement-1",
-            "contributor_id": "c1",
-            "period": "2026-09",
-            "usage_items": [
-                {
-                    "content_id": "content-1",
-                    "usage_count": 10,
-                    "unit_price": 100,
-                    "amount": 1000,
-                },
-                {
-                    "content_id": "content-2",
-                    "usage_count": 5,
-                    "unit_price": 200,
-                    "amount": 1000,
-                },
-            ],
-        },
-    )
-    assert response.status_code == 200
-    statement = response.json()
-    assert statement["total"] == 2000
-    assert len(statement["usage_items"]) == 2
-
+    assert response.json() == {
+        "statement_id": "statement-1",
+        "contributor_id": "contributor-1",
+        "period": "2026-09",
+        "usage_items": payload["usage_items"],
+        "total": 777,
+        "replayed": False,
+    }
     fetched = client.get("/settlement-statements/statement-1")
-    assert fetched.status_code == 200
-    assert fetched.json()["contributor_id"] == "c1"
+    assert fetched.json() == {
+        key: value for key, value in response.json().items() if key != "replayed"
+    }
+
+
+@pytest.mark.parametrize("total", [-1, 1.5, "1"])
+def test_statement_total_requires_nonnegative_integer(
+    client: TestClient,
+    total: object,
+) -> None:
+    response = client.post(
+        "/settlement-statements", json=statement_payload(total=total)
+    )
+
+    assert response.status_code == 422
+
+
+def test_statement_accepts_zero_total_and_empty_usage_items(client: TestClient) -> None:
+    payload = statement_payload(total=0, usage_items=[])
+
+    response = client.post("/settlement-statements", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["usage_items"] == []
 
 
 def test_statement_missing(client: TestClient) -> None:
-    assert client.get("/settlement-statements/nonexistent").status_code == 404
+    assert client.get("/settlement-statements/missing").status_code == 404
 
 
-def test_conversion_failure_notification_accepts_workflow_error(
-    client: TestClient,
-) -> None:
-    response = client.post(
-        "/notifications",
+def test_statement_is_idempotent_and_rejects_event_reuse(client: TestClient) -> None:
+    payload = statement_payload()
+
+    first = client.post("/settlement-statements", json=payload)
+    replay = client.post("/settlement-statements", json=payload)
+    conflict = client.post(
+        "/settlement-statements", json={**payload, "total": 778}
+    )
+
+    assert first.json()["replayed"] is False
+    assert replay.json()["replayed"] is True
+    assert conflict.status_code == 409
+    assert client.get("/settlement-statements/statement-1").status_code == 200
+
+
+def test_concurrent_statement_retries_have_one_side_effect(client: TestClient) -> None:
+    payload = statement_payload(event_id="statement-concurrent")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        responses = list(
+            executor.map(
+                lambda _: client.post("/settlement-statements", json=payload), range(8)
+            )
+        )
+
+    assert sum(not response.json()["replayed"] for response in responses) == 1
+    audits = client.get("/audit-events").json()["items"]
+    assert sum(event["action"] == "statement.generated" for event in audits) == 1
+
+
+def test_api_owned_side_effects_are_auditable(client: TestClient) -> None:
+    create_submission(client)
+    enqueue(client)
+    client.post(
+        "/review-decisions",
         json={
-            "event_id": "svg-1:conversion-failure",
-            "recipient_id": "contributor-1",
-            "kind": "conversion_failure",
-            "reference_event_id": "svg-1:conversion",
-            "detail": "SVG 경로를 파싱할 수 없습니다.",
+            "event_id": "decision-1",
+            "submission_id": "submission-1",
+            "decision": "approved",
+            "reasons": [],
         },
     )
-
-    assert response.status_code == 200
-    assert response.json()["message"] == (
-        "SVG 변환에 실패했습니다: SVG 경로를 파싱할 수 없습니다."
+    client.post("/notifications", json=notification_payload())
+    client.post(
+        "/settlements",
+        json={
+            "event_id": "settlement-1",
+            "contributor_id": "contributor-1",
+            "period": "2026-09",
+            "revenue": 1000,
+            "usage_count": 10,
+        },
     )
+    client.post("/settlement-statements", json=statement_payload())
+
+    actions = [
+        event["action"] for event in client.get("/audit-events").json()["items"]
+    ]
+    assert actions == [
+        "submission.created",
+        "review.enqueued",
+        "review.decided",
+        "notification.sent",
+        "settlement.recorded",
+        "statement.generated",
+    ]
