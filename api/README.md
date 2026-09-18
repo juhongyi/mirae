@@ -1,132 +1,76 @@
-# DesignHub Phase 1-3 API
+# DesignHub Mock API
 
-기여자 콘텐츠의 기계적 사전 검증, 심사 대기열 관리, SLA 초과 감지, 심사 결정 및 알림(Phase 1), 정산 이상치 감지와 명세 생성·배포(Phase 2)를 제공하는 스텁 API다. Phase 3 SVG 변환은 n8n Code 노드가 직접 수행하며, API는 변환 실패 알림과 후속 제출 처리를 담당한다. 창작성과 품질에 대한 판단은 자동화하지 않으며, 상태는 프로세스 메모리에 저장된다.
+이 서비스는 n8n 워크플로우가 호출할 미리디 내부 애플리케이션을 모사한다. 제출물·심사 대기열·정산 원천 데이터를 제공하고, 워크플로우가 결정한 대기열 등록·심사 결과 기록·알림 발송·정산 명세 저장을 수행한다. 규칙 검증, SLA 계산, 정산 이상치 탐지, 메시지와 명세 생성은 n8n 워크플로우의 책임이다.
 
-## 처리 흐름
+상태는 프로세스 메모리에만 저장되며 프로세스를 다시 시작하면 초기화된다.
 
-1. `POST /submissions`로 제출물을 등록한다.
-2. `POST /submission-validations`로 등록된 제출물을 검증한다.
-3. 검증을 통과하면 `POST /review-queue`로 심사 대기열에 추가한다.
-4. 검증에 실패하면 검증 이벤트를 참조해 `POST /notifications`로 반려 알림을 생성한다.
-5. `POST /review-queue/sla-checks`로 대기 시간과 대기열 크기를 확인하고, 임계값을 초과한 경우 검사 이벤트를 참조해 운영자 알림을 생성한다.
-6. `POST /review-decisions`로 사람 심사 결과를 기록하고, 반려된 경우 결정 이벤트를 참조해 반려 알림을 생성한다.
+## 책임 경계
+
+| 구성요소 | 책임 |
+| --- | --- |
+| mock API | 원천 데이터 저장·조회, 요청된 부수 효과 실행, 멱등성, API 감사 기록 |
+| n8n | 규칙 평가, 집계, 임계값 판정, 메시지·명세 생성, 분기와 후속 작업 선택 |
 
 ## 엔드포인트
 
 | Method | Path | 설명 |
 | --- | --- | --- |
 | `GET` | `/health` | API 상태를 확인한다. |
-| `POST` | `/submissions` | 제출물과 검증에 필요한 메타데이터를 등록한다. |
+| `POST` | `/submissions` | 제출물과 자동화에 필요한 원천 메타데이터를 등록한다. |
 | `GET` | `/submissions/{submission_id}` | 등록된 제출물을 조회한다. |
-| `POST` | `/submission-validations` | 파일 규격, 금지 속성, 요소 개수, 여백 비율을 검증한다. |
-| `POST` | `/review-queue` | 검증을 통과한 제출물을 심사 대기열에 추가한다. |
-| `GET` | `/review-queue` | 현재 심사 대기열을 조회한다. |
-| `POST` | `/review-queue/sla-checks` | 최장 대기 시간과 대기열 크기의 임계값 초과 여부를 판정한다. |
-| `POST` | `/review-decisions` | 승인 또는 구체적인 반려 사유를 기록하고 대기열에서 제거한다. |
-| `POST` | `/notifications` | 반려 결과 또는 SLA 초과 결과를 템플릿 메시지로 생성한다. |
-| `GET` | `/notifications` | 생성된 알림을 조회한다. |
-| `GET` | `/audit-events` | 제출, 검증, 대기열, 심사, 알림 처리 이력을 조회한다. |
-
-## Phase 2: 정산·통보
-
-| Method | Path | 설명 |
-| --- | --- | --- |
-| `POST` | `/settlements` | 기여자·주기별 정산 데이터를 등록한다. |
-| `GET` | `/settlements` | 등록된 정산 데이터를 조회한다. (`period` 쿼리로 필터 가능) |
-| `POST` | `/settlement-anomaly-checks` | 수익 급감·0원 급변·비공개 처리 이상 징후를 규칙으로 판정한다. |
-| `POST` | `/settlement-statements` | 건별 상세 명세를 생성·저장한다. |
+| `POST` | `/review-queue` | 워크플로우가 선택한 제출물을 심사 대기열에 추가한다. |
+| `GET` | `/review-queue` | 현재 심사 대기열 원천 데이터를 조회한다. |
+| `POST` | `/review-decisions` | 사람 심사 결과를 기록하고 대기열에서 제거한다. |
+| `POST` | `/notifications` | 워크플로우가 완성한 메시지를 발송·저장한다. |
+| `GET` | `/notifications` | 발송된 알림을 조회한다. |
+| `POST` | `/settlements` | 기여자·주기별 정산 원천 데이터를 등록한다. |
+| `GET` | `/settlements` | 정산 원천 데이터를 조회한다. `period` 쿼리로 필터링할 수 있다. |
+| `POST` | `/settlement-statements` | 워크플로우가 완성한 상세 명세를 저장한다. |
 | `GET` | `/settlement-statements/{statement_id}` | 저장된 명세를 조회한다. |
+| `GET` | `/audit-events` | API가 수행한 부수 효과의 감사 기록을 조회한다. |
 
-### 정산 필드
+`/submission-validations`, `/review-queue/sla-checks`, `/settlement-anomaly-checks`는 제공하지 않는다. 해당 판단은 n8n 워크플로우가 원천 데이터를 이용해 수행한다.
 
-`POST /settlements`는 다음 핵심 값을 받는다.
+## 주요 계약
 
-| 필드 | 설명 |
-| --- | --- |
-| `event_id` | 멱등성 판정에 사용하는 이벤트 식별자 |
-| `contributor_id` | 기여자 식별자 |
-| `period` | 정산 주기 식별자 (예: `2026-09`) |
-| `revenue` | 주기 수익 (원 단위 정수) |
-| `usage_count` | 주기 사용 횟수 |
-| `content_statuses` | 콘텐츠 ID → `published`/`unpublished` 상태 |
-| `usage_items` | 건별 사용 내역 (`content_id`, `usage_count`, `unit_price`, `amount`) |
+### 심사 대기열
 
-### 이상치 감지 규칙
+`POST /review-queue`는 `event_id`와 `submission_id`를 받는다. API는 제출물의 존재를 확인하고 대기열에 저장하며, 자동 검증 통과 여부를 다시 판정하지 않는다.
 
-`POST /settlement-anomaly-checks`는 지정한 주기와 이전 주기를 비교해 다음 규칙을 적용한다. 임계값은 요청 파라미터(`revenue_ratio_threshold`, `usage_ratio_threshold`)로 조정할 수 있으며 기본값은 각각 `0.7`, `0.8`이다.
+### 심사 결정
 
-| 규칙 | 판정 기준 |
-| --- | --- |
-| `revenue_drop` | 사용량 비율 ≥ `usage_ratio_threshold`이면서 수익 비율 ≤ `revenue_ratio_threshold`인 경우 |
-| `zero_revenue` | 이전 주기 수익 > 0인데 현재 주기 수익이 0원인 경우 |
-| `content_unpublished` | 이전 주기 `published` → 현재 주기 `unpublished`로 바뀐 콘텐츠가 있는 경우 |
+`POST /review-decisions`는 `approved` 또는 `rejected` 결정을 기록한다. 반려에는 하나 이상의 사유 코드가 필요하고 승인에는 반려 사유를 포함할 수 없다. API는 사유 코드를 그대로 반환하며, 구체적인 안내 문구는 n8n이 구성한다.
 
-감지 결과는 `anomalies`에 기여자별로 담긴다. 이상 감지 알림은 `POST /notifications`에 `kind: "anomaly_alert"`와 해당 기여자를 `recipient_id`로 전달해 생성한다.
+지원하는 사유 코드는 `file_specification`, `forbidden_attribute`, `element_count`, `whitespace_ratio`, `copyright_risk`, `visual_quality`다.
 
-### 명세 필드
+### 알림
 
-`POST /settlement-statements`는 `usage_items`(건별 `content_id`, `usage_count`, `unit_price`, `amount`)를 받아 `total`을 계산해 저장한다.
-
-FastAPI가 생성하는 전체 요청 및 응답 스키마는 `/docs` 또는 `/openapi.json`에서 확인할 수 있다.
-
-## 제출물 필드
-
-`POST /submissions`는 다음 핵심 값을 받는다.
+`POST /notifications`는 다음 값을 받는다.
 
 | 필드 | 설명 |
 | --- | --- |
-| `event_id` | 멱등성 판정에 사용하는 이벤트 식별자 |
-| `submission_id` | 제출물 식별자 |
-| `contributor_id` | 제출한 기여자 식별자 |
-| `content_type` | `svg` 또는 `image` |
-| `format` | 파일 형식 |
-| `width`, `height` | 픽셀 기준 크기 |
-| `file_size_bytes` | 바이트 기준 파일 크기 |
-| `svg_attributes` | SVG 속성 이름과 값 |
-| `element_count` | SVG 디자인 요소 개수 |
-| `whitespace_ratio` | `0`부터 `1` 사이의 여백 비율 |
-| `submitted_at` | timezone을 포함한 ISO 8601 제출 시각 |
+| `event_id` | 멱등성 식별자 |
+| `recipient_id` | 수신자 식별자 |
+| `kind` | `rejection`, `operator_alert`, `anomaly_alert`, `conversion_failure`, `settlement_statement` 중 하나 |
+| `reference_event_id` | 워크플로우 실행 결과나 도메인 이벤트의 상관관계 식별자 |
+| `message` | 워크플로우가 완성한 비어 있지 않은 메시지 |
 
-## 검증 정책
+API는 참조 이벤트를 해석하거나 메시지를 다시 작성하지 않는다.
 
-| 항목 | SVG | 이미지 |
-| --- | --- | --- |
-| 허용 형식 | `svg` | `png`, `jpg`, `jpeg` |
-| 최대 파일 크기 | 150 KiB | 10 MiB |
-| 가로·세로 범위 | 100~10,000 px | 100~10,000 px |
-| 금지 속성 | `fill-rule="evenodd"`, `stroke` | 적용하지 않음 |
-| 최대 요소 개수 | 1,000 | 적용하지 않음 |
-| 최대 여백 비율 | 0.5 | 0.5 |
+### 정산 데이터와 명세
 
-검증은 중단 없이 모든 위반을 정의된 순서대로 반환한다. 검증을 통과한 결과를 참조한 요청만 심사 대기열에 추가할 수 있다.
+정산 데이터에는 기여자, 주기, 수익, 사용 횟수, 콘텐츠 공개 상태와 건별 사용 내역이 포함된다. n8n은 현재·과거 데이터를 비교해 이상 징후를 찾고 건별 `amount`를 합산해 명세를 완성한다.
 
-## SLA 정책
+`POST /settlement-statements`는 `event_id`, `contributor_id`, `period`, `usage_items`, `total`을 받으며 전달된 명세를 그대로 저장한다. `total`은 0 이상의 정수다.
 
-`POST /review-queue/sla-checks`의 기본 임계값은 최장 대기 10일, 대기열 20건이다. 실제 값이 임계값을 초과할 때만 `breaches`에 `longest_wait_days` 또는 `queue_size`가 포함된다. 요청의 `checked_at`은 timezone을 포함해야 한다.
+## 멱등성과 오류
 
-## 반려 사유
-
-| 코드 | 명칭 |
-| --- | --- |
-| `file_specification` | 파일 규격 |
-| `forbidden_attribute` | 금지 속성 |
-| `element_count` | 요소 개수 |
-| `whitespace_ratio` | 여백 비율 |
-| `copyright_risk` | 저작권 위험 |
-| `visual_quality` | 시각 품질 기준 |
-
-반려 결정에는 하나 이상의 사유가 필요하고 승인 결정에는 반려 사유를 포함할 수 없다. 반려 알림은 검증 또는 심사 결정에 저장된 사유의 명칭과 수정 안내를 동일한 템플릿으로 조합한다. 알림 수신자는 해당 제출물의 `contributor_id`와 일치해야 한다.
-
-## 멱등성과 상태
-
-모든 `POST` 요청은 전역적으로 고유한 `event_id`를 사용한다. 성공한 요청과 같은 `event_id`, 같은 요청 본문을 다시 보내면 기존 결과와 `replayed: true`를 반환한다. 성공한 요청에 사용한 `event_id`를 다른 요청에 사용하면 `409 Conflict`를 반환한다.
-
-제출물, 검증 결과, 대기열, 심사 결정, 알림, 감사 기록과 멱등성 정보는 프로세스 메모리에만 유지되며 프로세스를 다시 시작하면 초기화된다.
-
-## 오류
+모든 `POST` 요청은 전역적으로 고유한 `event_id`를 사용한다. 같은 `event_id`와 같은 본문을 재전송하면 기존 결과와 `replayed: true`를 반환한다. 이미 사용한 `event_id`를 다른 요청이나 본문에 사용하면 `409 Conflict`를 반환한다.
 
 | 상태 | 의미 |
 | --- | --- |
-| `404 Not Found` | 제출물, 검증 결과, 심사 대상 또는 참조 이벤트가 존재하지 않음 |
-| `409 Conflict` | 식별자 충돌, 검증 실패 제출물의 대기열 등록, 잘못된 알림 대상 또는 알림 조건 불충족 |
-| `422 Unprocessable Entity` | 필수 필드, 값 범위, timezone 또는 심사 결정 규칙이 올바르지 않음 |
+| `404 Not Found` | 제출물, 심사 대상 또는 명세가 존재하지 않음 |
+| `409 Conflict` | 식별자나 저장 상태가 충돌함 |
+| `422 Unprocessable Entity` | 필수 필드, 값 범위, timezone 또는 도메인 불변식이 올바르지 않음 |
+
+전체 요청 및 응답 스키마는 `/docs` 또는 `/openapi.json`에서 확인할 수 있다.
