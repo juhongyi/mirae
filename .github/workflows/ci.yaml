@@ -38,3 +38,6 @@ jobs:
       # Temporary: remove this guard once workflow files are added.
       - if: ${{ hashFiles('n8n/workflows/**/*.ts') != '' }}
         run: pnpm validate
+      # Temporary: remove this guard once workflow files are added.
+      - if: ${{ hashFiles('n8n/tests/**/*.ts') != '' }}
+        run: pnpm test:workflows

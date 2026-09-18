@@ -1,5 +1,5 @@
 {
 	"files": {
-		"includes": ["n8n/workflows/**/*.ts"]
+		"includes": ["n8n/workflows/**/*.ts", "n8n/tests/**/*.ts"]
 	}
 }

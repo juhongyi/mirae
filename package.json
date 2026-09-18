@@ -4,11 +4,13 @@
   "packageManager": "pnpm@11.23.0",
   "scripts": {
     "check": "pnpm exec biome check --write",
-    "validate": "for f in n8n/workflows/*.ts; do [ -f \"$f\" ] || continue; node --import tsx node_modules/@n8n/workflow-sdk/dist/cli/index.js validate \"$f\" || exit 1; done"
+    "validate": "for f in n8n/workflows/*.ts; do [ -f \"$f\" ] || continue; node --import tsx node_modules/@n8n/workflow-sdk/dist/cli/index.js validate \"$f\" || exit 1; done",
+    "test:workflows": "node --import tsx --test n8n/tests/*.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",
     "@n8n/workflow-sdk": "0.31.1",
+    "@resvg/resvg-js": "2.6.2",
     "lefthook": "2.1.14",
     "n8n-nodes-base": "2.38.2",
     "tsx": "4.23.13"
