@@ -32,9 +32,5 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Temporary: remove this guard once workflow files are added.
-      - if: ${{ hashFiles('n8n/workflows/**/*.ts') != '' }}
-        run: pnpm check && git diff --exit-code
-      # Temporary: remove this guard once workflow files are added.
-      - if: ${{ hashFiles('n8n/workflows/**/*.ts') != '' }}
-        run: pnpm validate
+      - run: pnpm check && git diff --exit-code
+      - run: pnpm validate
