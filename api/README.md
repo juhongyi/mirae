@@ -1,6 +1,6 @@
 # DesignHub Phase 1-3 API
 
-기여자 콘텐츠의 기계적 사전 검증, 심사 대기열 관리, SLA 초과 감지, 심사 결정 및 알림(Phase 1), 정산 이상치 감지와 명세 생성·배포(Phase 2)를 제공하는 스텁 API다. Phase 3 SVG 변환은 n8n Code 노드가 직접 수행하며, API는 변환 실패 알림과 후속 제출 처리를 담당한다. 창작성과 품질에 대한 판단은 자동화하지 않으며, 상태는 프로세스 메모리에 저장된다.
+기여자 콘텐츠의 기계적 사전 검증, 심사 대기열 관리, SLA 초과 감지, 심사 결정 및 알림(Phase 1)과 정산 원천 데이터 제공(Phase 2)을 담당하는 스텁 API다. 정산 이상치 판정과 명세 생성은 API가 아닌 워크플로우가 수행한다. Phase 3 SVG 변환은 n8n Code 노드가 직접 수행하며, API는 변환 실패 알림과 후속 제출 처리를 담당한다. 창작성과 품질에 대한 판단은 자동화하지 않으며, 상태는 프로세스 메모리에 저장된다.
 
 ## 처리 흐름
 
@@ -23,19 +23,18 @@
 | `GET` | `/review-queue` | 현재 심사 대기열을 조회한다. |
 | `POST` | `/review-queue/sla-checks` | 최장 대기 시간과 대기열 크기의 임계값 초과 여부를 판정한다. |
 | `POST` | `/review-decisions` | 승인 또는 구체적인 반려 사유를 기록하고 대기열에서 제거한다. |
-| `POST` | `/notifications` | 반려 결과 또는 SLA 초과 결과를 템플릿 메시지로 생성한다. |
+| `POST` | `/notifications` | 반려, SLA 초과, 이상치 고지, 명세 배포, 변환 실패 결과를 템플릿 메시지로 생성한다. |
 | `GET` | `/notifications` | 생성된 알림을 조회한다. |
 | `GET` | `/audit-events` | 제출, 검증, 대기열, 심사, 알림 처리 이력을 조회한다. |
 
 ## Phase 2: 정산·통보
 
+정산 영역에서 API는 **정산 원천 데이터를 제공**할 뿐이며, 이상치 판정과 명세 생성은 워크플로우의 책임이다.
+
 | Method | Path | 설명 |
 | --- | --- | --- |
 | `POST` | `/settlements` | 기여자·주기별 정산 데이터를 등록한다. |
 | `GET` | `/settlements` | 등록된 정산 데이터를 조회한다. (`period` 쿼리로 필터 가능) |
-| `POST` | `/settlement-anomaly-checks` | 수익 급감·0원 급변·비공개 처리 이상 징후를 규칙으로 판정한다. |
-| `POST` | `/settlement-statements` | 건별 상세 명세를 생성·저장한다. |
-| `GET` | `/settlement-statements/{statement_id}` | 저장된 명세를 조회한다. |
 
 ### 정산 필드
 
@@ -51,21 +50,9 @@
 | `content_statuses` | 콘텐츠 ID → `published`/`unpublished` 상태 |
 | `usage_items` | 건별 사용 내역 (`content_id`, `usage_count`, `unit_price`, `amount`) |
 
-### 이상치 감지 규칙
+### 알림 계약
 
-`POST /settlement-anomaly-checks`는 지정한 주기와 이전 주기를 비교해 다음 규칙을 적용한다. 임계값은 요청 파라미터(`revenue_ratio_threshold`, `usage_ratio_threshold`)로 조정할 수 있으며 기본값은 각각 `0.7`, `0.8`이다.
-
-| 규칙 | 판정 기준 |
-| --- | --- |
-| `revenue_drop` | 사용량 비율 ≥ `usage_ratio_threshold`이면서 수익 비율 ≤ `revenue_ratio_threshold`인 경우 |
-| `zero_revenue` | 이전 주기 수익 > 0인데 현재 주기 수익이 0원인 경우 |
-| `content_unpublished` | 이전 주기 `published` → 현재 주기 `unpublished`로 바뀐 콘텐츠가 있는 경우 |
-
-감지 결과는 `anomalies`에 기여자별로 담긴다. 이상 감지 알림은 `POST /notifications`에 `kind: "anomaly_alert"`와 해당 기여자를 `recipient_id`로 전달해 생성한다.
-
-### 명세 필드
-
-`POST /settlement-statements`는 `usage_items`(건별 `content_id`, `usage_count`, `unit_price`, `amount`)를 받아 `total`을 계산해 저장한다.
+정산 이상치 고지와 명세 배포는 워크플로우가 판정·생성한 결과를 알림으로 전달한다. `kind`는 `anomaly_alert`(이상치 고지) 또는 `settlement_statement`(명세 배포)이며, `detail`에 구체적인 사유 또는 명세 본문을 담는다.
 
 FastAPI가 생성하는 전체 요청 및 응답 스키마는 `/docs` 또는 `/openapi.json`에서 확인할 수 있다.
 
