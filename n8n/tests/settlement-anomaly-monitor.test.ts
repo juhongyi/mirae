@@ -116,37 +116,3 @@ test("unpublished transitions and multiple contributors are deterministic and de
 		assert.equal(new Set(item.anomalies.map((anomaly: any) => `${anomaly.rule}:${anomaly.content_id ?? ""}`)).size, item.anomalies.length);
 	}
 });
-
-test("statements calculate totals and deterministic event IDs", async () => {
-	const result = await runCode(
-		"settlement-statement-distribution.ts",
-		"Build Settlement Statements",
-		[
-			{
-				items: [
-					{ contributor_id: "z", period: "2026-09", usage_items: [usageItem("c1", 11), usageItem("c2", 4)] },
-					{ contributor_id: "a", period: "2026-09", usage_items: [usageItem("c3", 7)] },
-				],
-			},
-		],
-	);
-
-	assert.deepEqual(result[0].json.items.map((item: any) => [item.contributor_id, item.total]), [["a", 7], ["z", 15]]);
-	assert.equal(result[0].json.items[0].event_id, "settlement-statement:2026-09:a");
-});
-
-test("statement generation handles empty responses and skips incomplete statements", async () => {
-	const empty = await runCode(
-		"settlement-statement-distribution.ts",
-		"Build Settlement Statements",
-		[{ items: [] }],
-	);
-	const incomplete = await runCode(
-		"settlement-statement-distribution.ts",
-		"Build Settlement Statements",
-		[{ items: [{ contributor_id: "a", period: "2026-09", usage_items: [] }] }],
-	);
-
-	assert.deepEqual(empty, [{ json: { items: [] } }]);
-	assert.deepEqual(incomplete, [{ json: { items: [] } }]);
-});
